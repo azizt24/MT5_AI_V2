@@ -6,12 +6,12 @@ import MetaTrader5 as mt5
 
 class TradeLogger:
     def __init__(self):
-        os.makedirs("trade_logs", exist_ok=True)
-        
+        os.makedirs("trade_logs", exist_ok=True)  
+
     def log_trade(self, symbol: str, decision: Dict[str, Any], result: Dict[str, Any]):
-        """Structured trade logging with context"""
+        """Structured trade logging with local time context"""
         log_entry = {
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),  # ✅ Uses local time
             "symbol": symbol,
             "decision": decision,
             "result": result,
@@ -40,10 +40,10 @@ class TradeLogger:
             return {}
 
     def _write_log(self, symbol: str, entry: Dict[str, Any]):
-        filename = f"trade_logs/{symbol}_{datetime.utcnow().date()}.json"
+        filename = f"trade_logs/{symbol}_{datetime.now().date()}.json"  # ✅ Uses local date
         try:
             with open(filename, "a") as f:
                 f.write(json.dumps(entry) + "\n")
-            print(f"📄 Logged {symbol} trade: {entry['result']['status']}")
+            print(f"📄 Logged {symbol} trade: {entry['result']['status']} at {entry['timestamp']}")
         except Exception as e:
             print(f"⛔ Failed to log trade: {str(e)}")

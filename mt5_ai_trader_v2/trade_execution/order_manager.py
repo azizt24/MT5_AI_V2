@@ -1,96 +1,110 @@
 import MetaTrader5 as mt5
 from typing import Dict, Any
-from config import Settings
+from config import Settings  # ✅ Importing settings
 
 class OrderManager:
     def __init__(self):
-        self.min_lot_size = 0.01
-        
+        self.fixed_lot_size = 0.1  # ✅ Fixed lot size for all trades
+
     def execute_order(self, decision: Dict[str, Any], symbol: str) -> Dict[str, Any]:
-        """Enhanced order execution with pre-trade checks"""
+        """Execute trade orders based on AI decisions."""
+        
         if decision['action'] == 'hold':
             return {'status': 'hold', 'symbol': symbol}
-            
+
         try:
+            # Validate decision parameters
             self._validate_decision(decision, symbol)
+
+            # Get current price
             price_info = self._get_price_info(symbol, decision['action'])
-            lot_size = self._calculate_position_size(symbol, decision, price_info)
-            
-            return self._send_order(
-                symbol=symbol,
-                order_type=decision['action'],
-                price=price_info['price'],
-                sl=decision['stop_loss'],
-                tp=decision['take_profit'],
-                lot_size=lot_size
-            )
+
+            # Prepare trade request
+            request = {
+                "action": mt5.TRADE_ACTION_DEAL,
+                "symbol": symbol,
+                "volume": self.fixed_lot_size,
+                "type": mt5.ORDER_TYPE_BUY if decision['action'] == 'buy' else mt5.ORDER_TYPE_SELL,
+                "price": price_info['price'],
+                "sl": decision['stop_loss'],
+                "tp": decision['take_profit'],
+                "deviation": 10,
+                "type_time": mt5.ORDER_TIME_GTC,
+                "comment": "AI Trade"
+            }
+
+            # Send order to MT5
+            result = mt5.order_send(request)
+            if result.retcode != mt5.TRADE_RETCODE_DONE:
+                raise ValueError(f"Order rejected: {result.comment}")
+
+            return {'status': 'executed', 'symbol': symbol, 'volume': self.fixed_lot_size, 'price': result.price}
+
         except Exception as e:
             return {'status': 'error', 'symbol': symbol, 'error': str(e)}
 
     def _validate_decision(self, decision: Dict[str, Any], symbol: str):
-        """Comprehensive decision validation"""
+        """Check if the trade decision is valid before placing an order."""
         if decision['stop_loss'] <= 0 or decision['take_profit'] <= 0:
-            raise ValueError("Invalid price levels")
-            
+            raise ValueError("Invalid stop-loss or take-profit levels.")
+        
         symbol_info = mt5.symbol_info(symbol)
         if not symbol_info:
-            raise ValueError("Symbol info unavailable")
-            
-        point = symbol_info.point
-        if point <= 0:
-            raise ValueError("Invalid point value")
+            raise ValueError(f"Symbol {symbol} information is unavailable.")
 
     def _get_price_info(self, symbol: str, action: str) -> Dict[str, float]:
-        """Get current pricing with validation"""
+        """Retrieve bid/ask prices for trade execution."""
         tick = mt5.symbol_info_tick(symbol)
         if not tick:
-            raise ValueError("Price data unavailable")
-            
+            raise ValueError(f"Failed to get price data for {symbol}.")
+        
         return {
             'price': tick.ask if action == 'buy' else tick.bid,
             'spread': tick.ask - tick.bid
         }
 
-    def _calculate_position_size(self, symbol: str, decision: Dict[str, Any], 
-                               price_info: Dict[str, float]) -> float:
-        """Risk-adjusted position sizing"""
-        balance = mt5.account_info().balance
-        risk_amount = balance * (Settings.RISK_PERCENT / 100)
-        price_distance = abs(price_info['price'] - decision['stop_loss'])
-        
-        if price_distance <= 0:
-            return self.min_lot_size
-            
-        pip_value = mt5.symbol_info(symbol).trade_tick_value
-        lot_size = (risk_amount / price_distance) / pip_value
-        
-        return max(min(lot_size, mt5.symbol_info(symbol).volume_max), self.min_lot_size)
+    def get_open_trade(self, symbol: str) -> Dict[str, Any]:
+        """Check for existing open trades for the symbol."""
+        orders = mt5.positions_get(symbol=symbol)
+        if orders:
+            for order in orders:
+                return {
+                    'order_id': order.ticket,
+                    'symbol': order.symbol,
+                    'volume': order.volume,
+                    'price_open': order.price_open,
+                    'stop_loss': order.sl,
+                    'take_profit': order.tp,
+                    'type': 'buy' if order.type == mt5.ORDER_TYPE_BUY else 'sell'
+                }
+        return {}
 
-    def _send_order(self, symbol: str, order_type: str, price: float,
-                  sl: float, tp: float, lot_size: float) -> Dict[str, Any]:
-        """Execute validated order"""
-        request = {
-            "action": mt5.TRADE_ACTION_DEAL,
-            "symbol": symbol,
-            "volume": round(lot_size, 2),
-            "type": mt5.ORDER_TYPE_BUY if order_type == 'buy' else mt5.ORDER_TYPE_SELL,
-            "price": price,
-            "sl": sl,
-            "tp": tp,
-            "deviation": 20,
-            "type_time": mt5.ORDER_TIME_GTC,
-            "comment": "AI Trade"
+    def adjust_trade(self, existing_trade: Dict[str, Any], decision: Dict[str, Any]):
+        """Adjust stop-loss and take-profit of an open trade."""
+        if not existing_trade:
+            print("⚠️ No open trade found for adjustment.")
+            return
+
+        order_id = existing_trade['order_id']
+        new_stop_loss = decision['stop_loss']
+        new_take_profit = decision['take_profit']
+
+        # ✅ Check if trade is still open
+        open_positions = mt5.positions_get(ticket=order_id)
+        if not open_positions:
+            print(f"⚠️ Trade {order_id} not found or already closed.")
+            return
+
+        # ✅ Modify existing trade
+        modify_request = {
+            "action": mt5.TRADE_ACTION_MODIFY,
+            "position": order_id,
+            "sl": new_stop_loss,
+            "tp": new_take_profit,
         }
-        
-        result = mt5.order_send(request)
+
+        result = mt5.order_send(modify_request)
         if result.retcode != mt5.TRADE_RETCODE_DONE:
-            raise ValueError(f"Order rejected: {result.comment}")
-            
-        return {
-            'status': 'executed',
-            'symbol': symbol,
-            'volume': lot_size,
-            'price': result.price,
-            'sl': sl,
-            'tp': tp
-        }
+            print(f"⚠️ Failed to adjust trade {order_id}: {result.comment}")
+        else:
+            print(f"✅ Trade {order_id} updated: SL={new_stop_loss}, TP={new_take_profit}")

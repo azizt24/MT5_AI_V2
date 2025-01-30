@@ -1,9 +1,43 @@
-### indicators/trend_analysis.py
 import pandas as pd
+import pandas_ta as ta
+from typing import Optional
 
-def detect_trend(df):
-    """Identify strong uptrends/downtrends using moving averages."""
-    df["trend"] = "Neutral"
-    df.loc[df["ema_20"] > df["ema_50"], "trend"] = "Bullish"
-    df.loc[df["ema_20"] < df["ema_50"], "trend"] = "Bearish"
-    return df
+class TechnicalAnalyzer:
+    def analyze(self, df: pd.DataFrame) -> Optional[pd.DataFrame]:
+        """Calculate technical indicators and detect trends"""
+        print("📈 Calculating technical indicators...")
+        required_columns = ['close', 'high', 'low']
+        if not all(col in df.columns for col in required_columns):
+            print(f"⛔ DataFrame is missing required columns: {', '.join(required_columns)}")
+            return None
+        
+        try:
+            # Ensure there's enough data to calculate indicators
+            if len(df) < 50:  # Using 50 as we need at least 50 data points to calculate ema50
+                print(f"⛔ Not enough data points to calculate indicators. At least 50 are required, but only {len(df)} were provided.")
+                return None
+
+            # Momentum indicators
+            df['rsi'] = ta.rsi(df['close'], length=14)
+            
+            # Trend indicators with underscores
+            df['ema20'] = ta.ema(df['close'], length=20)
+            df['ema50'] = ta.ema(df['close'], length=50)
+            
+            # Volatility indicators
+            df['atr'] = ta.atr(df['high'], df['low'], df['close'], length=14)
+            
+            # MACD
+            macd = ta.macd(df['close'])
+            df = pd.concat([df, macd], axis=1)
+            
+            # Detect trend
+            from indicators.trend_analysis import detect_trend
+            df = detect_trend(df)
+
+            print("✅ Technical analysis complete")
+            return df.dropna()
+            
+        except Exception as e:
+            print(f"⛔ Indicator calculation failed: {str(e)}")
+            return None

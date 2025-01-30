@@ -1,5 +1,8 @@
+# data/fetch_data.py
+
 import MetaTrader5 as mt5
 import pandas as pd
+import pandas_ta as ta  # Using pandas_ta for technical indicators
 import numpy as np
 from typing import Optional
 from config import Settings, Credentials
@@ -25,7 +28,7 @@ class DataFetcher:
             print(f"✅ Persistent connection established")
             
     def fetch_historical_data(self, symbol: str) -> Optional[pd.DataFrame]:
-        """Robust data fetcher with connection persistence"""
+        """Robust data fetcher with technical indicators"""
         print(f"📡 Fetching {symbol} data...")
         
         for attempt in range(self.max_retries):
@@ -50,11 +53,37 @@ class DataFetcher:
             except Exception as e:
                 print(f"⛔ Attempt {attempt+1} failed: {str(e)}")
                 time.sleep(self.retry_delay)
-            finally:
-                # Keep connection open for next symbols
-                pass
-                
         return None
+
+    def _process_rates(self, rates: np.ndarray, symbol: str) -> pd.DataFrame:
+        """Calculate technical indicators and return enriched DataFrame"""
+        df = pd.DataFrame(rates)
+        df['time'] = pd.to_datetime(df['time'], unit='s')
+        df['symbol'] = symbol
+        
+        # Calculate technical indicators using pandas_ta
+        df.ta.ema(length=20, append=True)  # EMA 20
+        df.ta.ema(length=50, append=True)  # EMA 50
+        df.ta.rsi(length=14, append=True)  # RSI 14
+        df.ta.atr(length=14, append=True)  # ATR 14
+        df.ta.adx(length=14, append=True)  # ADX 14
+        df.ta.bbands(length=20, std=2, append=True)  # Bollinger Bands
+
+        # Rename columns for consistency
+        df.rename(columns={
+            'EMA_20': 'ema20',
+            'EMA_50': 'ema50',
+            'RSI_14': 'rsi',
+            'ATRr_14': 'atr',
+            'ADX_14': 'adx',
+            'BBL_20_2.0': 'bollinger_lower',
+            'BBM_20_2.0': 'bollinger_middle',
+            'BBU_20_2.0': 'bollinger_upper'
+        }, inplace=True)
+
+        return df[['time', 'symbol', 'open', 'high', 'low', 'close', 'tick_volume',
+                   'ema20', 'ema50', 'rsi', 'atr', 'adx', 
+                   'bollinger_lower', 'bollinger_middle', 'bollinger_upper']]
 
     def _ensure_symbol_available(self, symbol: str) -> bool:
         """Advanced symbol validation with persistent Market Watch"""
@@ -78,13 +107,6 @@ class DataFetcher:
             
         print(f"⛔ No market data for {symbol}")
         return False
-
-    def _process_rates(self, rates: np.ndarray, symbol: str) -> pd.DataFrame:
-        """Process rates with validation"""
-        df = pd.DataFrame(rates)
-        df['time'] = pd.to_datetime(df['time'], unit='s')
-        df['symbol'] = symbol
-        return df[['time', 'symbol', 'open', 'high', 'low', 'close', 'tick_volume']]
 
     def shutdown(self):
         """Proper connection cleanup"""
