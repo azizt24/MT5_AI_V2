@@ -1,116 +1,67 @@
-# data/fetch_data.py
-
 import MetaTrader5 as mt5
 import pandas as pd
-import pandas_ta as ta  # Using pandas_ta for technical indicators
-import numpy as np
-from typing import Optional
-from config import Settings, Credentials
-import time
+import os
+from datetime import datetime
+import sys
+
+# Add the project root directory to sys.path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+from config.settings import Settings  # Now Python will find 'config'
 
 class DataFetcher:
     def __init__(self):
-        self.timeframe_map = {
+        self.symbols = Settings.SYMBOLS
+        self.timeframes = {
+            "M1": mt5.TIMEFRAME_M1,
+            "M5": mt5.TIMEFRAME_M5,
             "M15": mt5.TIMEFRAME_M15,
             "H1": mt5.TIMEFRAME_H1,
             "D1": mt5.TIMEFRAME_D1
         }
-        self.max_retries = 3
-        self.retry_delay = 5
-        self.connection = None
-        
-    def initialize(self):
-        """Maintain persistent MT5 connection"""
-        if not self.connection or not mt5.initialize(**Credentials.mt5()):
-            self.connection = mt5.initialize(**Credentials.mt5())
-            if not self.connection:
-                raise ConnectionError(f"MT5 connection failed: {mt5.last_error()}")
-            print(f"✅ Persistent connection established")
-            
-    def fetch_historical_data(self, symbol: str) -> Optional[pd.DataFrame]:
-        """Robust data fetcher with technical indicators"""
-        print(f"📡 Fetching {symbol} data...")
-        
-        for attempt in range(self.max_retries):
-            try:
-                self.initialize()
-                
-                if not self._ensure_symbol_available(symbol):
-                    return None
-                    
-                rates = mt5.copy_rates_from_pos(
-                    symbol,
-                    self.timeframe_map[Settings.TIMEFRAME],
-                    0,
-                    Settings.DATA_BARS
-                )
-                
-                if rates is None or rates.size == 0:
-                    raise ValueError(f"No data received for {symbol}")
-                    
-                return self._process_rates(rates, symbol)
-                
-            except Exception as e:
-                print(f"⛔ Attempt {attempt+1} failed: {str(e)}")
-                time.sleep(self.retry_delay)
-        return None
+        self.bars = 1000  # Number of bars to fetch
+        os.makedirs("data/data", exist_ok=True)  # Ensure correct data folder
 
-    def _process_rates(self, rates: np.ndarray, symbol: str) -> pd.DataFrame:
-        """Calculate technical indicators and return enriched DataFrame"""
+    def connect_mt5(self):
+        """Connect to MetaTrader 5"""
+        if not mt5.initialize():
+            print("⛔ MT5 Initialization Failed")
+            return False
+        return True
+
+    def fetch_historical_data(self, symbol: str, timeframe: str):
+        """Fetch historical data for a given symbol & timeframe"""
+        if timeframe not in self.timeframes:
+            print(f"⛔ Invalid timeframe: {timeframe}")
+            return None
+
+        rates = mt5.copy_rates_from_pos(symbol, self.timeframes[timeframe], 0, self.bars)
+        if rates is None:
+            print(f"⛔ No data received for {symbol} on {timeframe} timeframe")
+            return None
+
         df = pd.DataFrame(rates)
         df['time'] = pd.to_datetime(df['time'], unit='s')
-        df['symbol'] = symbol
-        
-        # Calculate technical indicators using pandas_ta
-        df.ta.ema(length=20, append=True)  # EMA 20
-        df.ta.ema(length=50, append=True)  # EMA 50
-        df.ta.rsi(length=14, append=True)  # RSI 14
-        df.ta.atr(length=14, append=True)  # ATR 14
-        df.ta.adx(length=14, append=True)  # ADX 14
-        df.ta.bbands(length=20, std=2, append=True)  # Bollinger Bands
+        df.set_index('time', inplace=True)
+        return df[['open', 'high', 'low', 'close', 'tick_volume']]
 
-        # Rename columns for consistency
-        df.rename(columns={
-            'EMA_20': 'ema20',
-            'EMA_50': 'ema50',
-            'RSI_14': 'rsi',
-            'ATRr_14': 'atr',
-            'ADX_14': 'adx',
-            'BBL_20_2.0': 'bollinger_lower',
-            'BBM_20_2.0': 'bollinger_middle',
-            'BBU_20_2.0': 'bollinger_upper'
-        }, inplace=True)
+    def save_data(self):
+        """Fetch & save historical data for all symbols & timeframes"""
+        if not self.connect_mt5():
+            return
 
-        return df[['time', 'symbol', 'open', 'high', 'low', 'close', 'tick_volume',
-                   'ema20', 'ema50', 'rsi', 'atr', 'adx', 
-                   'bollinger_lower', 'bollinger_middle', 'bollinger_upper']]
+        for symbol in self.symbols:
+            for tf in self.timeframes.keys():
+                print(f"📊 Fetching {symbol} {tf} data...")
+                df = self.fetch_historical_data(symbol, tf)
+                if df is not None:
+                    filename = f"data/data/{symbol}_{tf}_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.csv"
+                    df.to_csv(filename)
+                    print(f"✅ Saved {filename}")
 
-    def _ensure_symbol_available(self, symbol: str) -> bool:
-        """Advanced symbol validation with persistent Market Watch"""
-        if not mt5.symbol_select(symbol, True):
-            print(f"⛔ Critical: Failed to add {symbol} to Market Watch")
-            return False
-            
-        # Verify symbol properties
-        info = mt5.symbol_info(symbol)
-        if not info or not info.visible:
-            print(f"⛔ {symbol} not visible after selection")
-            return False
-            
-        # Verify market data
-        for _ in range(5):
-            tick = mt5.symbol_info_tick(symbol)
-            if tick and tick.time > 0:
-                print(f"✅ Verified {symbol} market data")
-                return True
-            time.sleep(0.5)
-            
-        print(f"⛔ No market data for {symbol}")
-        return False
+        mt5.shutdown()
+        print("🔌 MT5 Connection Closed")
 
-    def shutdown(self):
-        """Proper connection cleanup"""
-        if self.connection:
-            mt5.shutdown()
-            self.connection = None
-            print("🔌 MT5 connection closed")
+if __name__ == "__main__":
+    fetcher = DataFetcher()
+    fetcher.save_data()
